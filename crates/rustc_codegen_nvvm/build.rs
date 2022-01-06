@@ -51,13 +51,12 @@ pub fn output(cmd: &mut Command) -> String {
 }
 
 fn target_to_llvm_prebuilt(target: &str) -> String {
-    let base = match target {
+    match target {
         "x86_64-pc-windows-msvc" => "windows-x86_64",
         // NOTE(RDambrosio016): currently disabled because of weird issues with segfaults and building the C++ shim
         // "x86_64-unknown-linux-gnu" => "linux-x86_64",
         _ => panic!("Unsupported target with no matching prebuilt LLVM: `{}`, install LLVM and set LLVM_CONFIG", target)
-    };
-    format!("{}.tar.xz", base)
+    }.to_owned()
 }
 
 fn find_llvm_config(target: &str) -> PathBuf {
@@ -79,15 +78,34 @@ fn find_llvm_config(target: &str) -> PathBuf {
     }
 
     // otherwise, download prebuilt LLVM.
+    let out = env::var("OUT_DIR").expect("OUT_DIR was not set");
+    let prebuilt_name = target_to_llvm_prebuilt(target);
+    let mut llvm_config = PathBuf::from(&out);
+    llvm_config.extend([&prebuilt_name, "bin", "llvm-config"]);
+    if target.contains("windows") {
+        llvm_config.set_extension("exe");
+    }
+    if !llvm_config.exists() {
+        download_llvm(&out, &prebuilt_name);
+    }
+
+    let out_path = PathBuf::from(out).join(prebuilt_name);
+
+    println!("cargo:rerun-if-changed={}", out_path.display());
+
+    out_path
+        .join("bin")
+        .join(format!("llvm-config{}", std::env::consts::EXE_SUFFIX))
+}
+
+fn download_llvm(out: &str, prebuilt_name: &str) {
     println!("cargo:warning=Downloading prebuilt LLVM");
     let mut url = tracked_env_var_os("PREBUILT_LLVM_URL")
         .map(|x| x.to_string_lossy().to_string())
         .unwrap_or_else(|| PREBUILT_LLVM_URL.to_string());
 
-    let prebuilt_name = target_to_llvm_prebuilt(target);
-    url = format!("{}{}", url, prebuilt_name);
+    url = format!("{}{}.tar.xz", url, prebuilt_name);
 
-    let out = env::var("OUT_DIR").expect("OUT_DIR was not set");
     let mut easy = Easy::new();
 
     easy.url(&url).unwrap();
@@ -110,13 +128,6 @@ fn find_llvm_config(target: &str) -> PathBuf {
     let mut ar = Archive::new(decompressor);
 
     ar.unpack(&out).expect("Failed to unpack LLVM to LLVM dir");
-    let out_path = PathBuf::from(out).join(prebuilt_name.strip_suffix(".tar.xz").unwrap());
-
-    println!("cargo:rerun-if-changed={}", out_path.display());
-
-    out_path
-        .join("bin")
-        .join(format!("llvm-config{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn detect_llvm_link() -> (&'static str, &'static str) {
